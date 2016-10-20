@@ -145,14 +145,20 @@ class MovieDialogReader(DataReader):
     GO_ID = data_utils.GO_ID
     PAD_ID = data_utils.PAD_ID
 
-    DROPOUT_WORDS = {"a", "an", "the"}
-    DROPOUT_PROB = 0.25
+    DROPOUT_WORDS = {"a", "an", "the", "'ll", "'s", "'m", "'ve"}  # Add "to"
 
-    REPLACEMENTS = {"there": "their", "their": "there"}
-    REPLACEMENT_PROB = 0.25
+    REPLACEMENTS = {"there": "their", "their": "there", "then": "than",
+                    "than": "then"}
+    # Add: "be":"to"
 
-    def __init__(self, config, train_path):
+    def __init__(self, config, train_path, dropout_prob=0.25,
+                 replacement_prob=0.25,
+                 dataset_copies=2):
         super(MovieDialogReader, self).__init__(config)
+
+        self.dropout_prob = dropout_prob
+        self.replacement_prob = replacement_prob
+        self.dataset_copies = dataset_copies
 
         max_vocabulary_size = self.config.max_vocabulary_size
 
@@ -186,11 +192,9 @@ class MovieDialogReader(DataReader):
 
                 # Randomly dropout some words from the input.
                 dropout_word = (word in MovieDialogReader.DROPOUT_WORDS and
-                                random.random() <
-                                MovieDialogReader.DROPOUT_PROB)
+                                random.random() < self.dropout_prob)
                 replace_word = (word in MovieDialogReader.REPLACEMENTS and
-                                random.random() <
-                                MovieDialogReader.REPLACEMENT_PROB)
+                                random.random() < self.replacement_prob)
 
                 if replace_word:
                     source.append(MovieDialogReader.REPLACEMENTS[word])
@@ -224,13 +228,16 @@ class MovieDialogReader(DataReader):
     def build_dataset(self, path):
         dataset = [[] for _ in self.config.buckets]
 
-        for source, target in self._read(path):
-            for bucket_id, (source_size, target_size) in enumerate(
-                    self.config.buckets):
-                if len(source) < source_size and len(
-                        target) < target_size:
-                    dataset[bucket_id].append([source, target])
-                    break
+        # Make multiple copies of the dataset so that we synthesize different
+        # dropouts.
+        for _ in range(self.dataset_copies):
+            for source, target in self._read(path):
+                for bucket_id, (source_size, target_size) in enumerate(
+                        self.config.buckets):
+                    if len(source) < source_size and len(
+                            target) < target_size:
+                        dataset[bucket_id].append([source, target])
+                        break
 
         return dataset
 
