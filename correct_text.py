@@ -1,42 +1,35 @@
+"""Program used to create, train, and evaluate "text correcting" models.
+
+Defines utilities that allow for:
+1. Creating a TextCorrecterModel
+2. Training a TextCorrecterModel using a given DataReader (i.e. a data source)
+3. Decoding predictions from a trained TextCorrecterModel
+
+Note: this has been mostly copied from Tensorflow's translate.py demo
+"""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import math
 import os
-import random
 import sys
 import time
 
 import numpy as np
 import tensorflow as tf
 
-from tensorflow.models.rnn.translate import seq2seq_model
+from data_reader import EOS_ID
 
+from text_correcter_models import TextCorrecterModel
 
-tf.app.flags.DEFINE_float("learning_rate", 0.5, "Learning rate.")
-tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99,
-                          "Learning rate decays by this much.")
-tf.app.flags.DEFINE_float("max_gradient_norm", 5.0,
-                          "Clip gradients to this norm.")
-tf.app.flags.DEFINE_integer("batch_size", 64,
-                            "Batch size to use during training.")
-tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
-tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
-tf.app.flags.DEFINE_integer("en_vocab_size", 40000, "English vocabulary size.")
-tf.app.flags.DEFINE_integer("fr_vocab_size", 40000, "French vocabulary size.")
-tf.app.flags.DEFINE_string("data_dir", "/tmp", "Data directory")
-tf.app.flags.DEFINE_string("train_dir", "/tmp", "Training directory.")
-tf.app.flags.DEFINE_integer("max_train_data_size", 0,
-                            "Limit on the size of training data (0: no limit).")
-tf.app.flags.DEFINE_integer("steps_per_checkpoint", 200,
-                            "How many training steps to do per checkpoint.")
-tf.app.flags.DEFINE_boolean("decode", False,
-                            "Set to True for interactive decoding.")
-tf.app.flags.DEFINE_boolean("self_test", False,
-                            "Run a self-test if this is set to True.")
-tf.app.flags.DEFINE_boolean("use_fp16", False,
-                            "Train using fp16 instead of fp32.")
+tf.app.flags.DEFINE_string("data_reader_type", "MovieDialogReader",
+                           "Type of data reader to use.")
+tf.app.flags.DEFINE_string("train_path", "/train", "Training data path.")
+tf.app.flags.DEFINE_string("val_path", "/val", "Validation data path.")
+tf.app.flags.DEFINE_string("test_path", "/test", "Testing data path.")
+tf.app.flags.DEFINE_string("config", "TestConfig", "Name of config to use.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -57,8 +50,11 @@ class TestConfig():
     learning_rate = 0.5
     learning_rate_decay_factor = 0.99
 
+    use_lstm = False
+    use_rms_prop = False
 
-class DefaultConfig():
+
+class DefaultPTBConfig():
     buckets = [(10, 10), (15, 15), (20, 20), (40, 40)]
 
     steps_per_checkpoint = 100
@@ -73,6 +69,9 @@ class DefaultConfig():
     learning_rate = 0.5
     learning_rate_decay_factor = 0.99
 
+    use_lstm = False
+    use_rms_prop = False
+
 
 class DefaultMovieDialogConfig():
     buckets = [(10, 10), (15, 15), (20, 20), (40, 40)]
@@ -80,7 +79,7 @@ class DefaultMovieDialogConfig():
     steps_per_checkpoint = 100
     max_steps = 20000
 
-    max_vocabulary_size = 40000
+    max_vocabulary_size = 10000  # 40,000 did worse
 
     size = 512
     num_layers = 2
@@ -89,10 +88,15 @@ class DefaultMovieDialogConfig():
     learning_rate = 0.5
     learning_rate_decay_factor = 0.99
 
+    use_lstm = True
+    use_rms_prop = True
+
+    projection_bias = 5.0
+
 
 def create_model(session, forward_only, model_path, config=TestConfig()):
     """Create translation model and initialize or load parameters in session."""
-    model = seq2seq_model.Seq2SeqModel(
+    model = TextCorrecterModel(
         config.max_vocabulary_size,
         config.max_vocabulary_size,
         config.buckets,
@@ -102,7 +106,9 @@ def create_model(session, forward_only, model_path, config=TestConfig()):
         config.batch_size,
         config.learning_rate,
         config.learning_rate_decay_factor,
-        forward_only=forward_only)
+        use_lstm=config.use_lstm,
+        forward_only=forward_only,
+        config=config)
     ckpt = tf.train.get_checkpoint_state(model_path)
     if ckpt and tf.gfile.Exists(ckpt.model_checkpoint_path):
         print("Reading model parameters from %s" % ckpt.model_checkpoint_path)
@@ -147,8 +153,9 @@ def train(data_reader, train_path, test_path, model_path):
         current_step = 0
         previous_losses = []
         while current_step < config.max_steps:
-            # Choose a bucket according to data distribution. We pick a random number
-            # in [0, 1] and use the corresponding interval in train_buckets_scale.
+            # Choose a bucket according to data distribution. We pick a random
+            # number in [0, 1] and use the corresponding interval in
+            # train_buckets_scale.
             random_number_01 = np.random.random_sample()
             bucket_id = min([i for i in range(len(train_buckets_scale))
                              if train_buckets_scale[i] > random_number_01])
@@ -164,7 +171,8 @@ def train(data_reader, train_path, test_path, model_path):
             loss += step_loss / config.steps_per_checkpoint
             current_step += 1
 
-            # Once in a while, we save checkpoint, print statistics, and run evals.
+            # Once in a while, we save checkpoint, print statistics, and run
+            # evals.
             if current_step % config.steps_per_checkpoint == 0:
                 # Print statistics for the previous epoch.
                 perplexity = math.exp(float(loss)) if loss < 300 else float(
@@ -210,7 +218,7 @@ def decode(sess, model, data_reader, sentences, verbose=True):
     decoded_sentences = []
 
     for sentence in sentences:
-        word_ids = data_reader.sentence_to_word_ids(sentence)
+        word_ids = data_reader.sentence_to_token_ids(sentence)
 
         # Which bucket does it belong to?
         matching_buckets = [b for b in range(len(model.buckets))
@@ -228,19 +236,19 @@ def decode(sess, model, data_reader, sentences, verbose=True):
                                          target_weights, bucket_id, True)
 
         # This is a greedy decoder - outputs are just argmaxes of output_logits.
-        # TODO(atpaino) use beam search?
+        # TODO(atpaino) use beam search? Would require modifying the "loop
+        # function" used in embedding_attention_decoder.
         outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
 
         # If there is an EOS symbol in outputs, cut them at that point.
-        if data_reader.eos_id() in outputs:
-            outputs = outputs[:outputs.index(data_reader.eos_id())]
+        if EOS_ID in outputs:
+            outputs = outputs[:outputs.index(EOS_ID)]
 
         decoding = [id_to_word[word_id] if word_id in id_to_word
                     else data_reader.unknown_token()
                     for word_id in outputs]
 
         if verbose:
-
             decoded_sentence = " ".join(decoding)
 
             print("Input: {}".format(sentence))
