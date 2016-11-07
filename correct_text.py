@@ -234,8 +234,6 @@ def decode(sess, model, data_reader, data_to_decode, verbose=True):
     """
     model.batch_size = 1
 
-    decoded_sentences = []
-
     for tokens in data_to_decode:
         token_ids = [data_reader.convert_token_to_id(token) for token in tokens]
 
@@ -275,9 +273,7 @@ def decode(sess, model, data_reader, data_to_decode, verbose=True):
                 " ".join(data_reader.token_ids_to_tokens(token_ids))))
             print("Output: {}\n".format(decoded_sentence))
 
-        decoded_sentences.append(decoding)
-
-    return decoded_sentences
+        yield decoding
 
 
 def decode_sentence(sess, model, data_reader, sentence, verbose=True):
