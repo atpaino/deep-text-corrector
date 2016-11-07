@@ -13,7 +13,8 @@ from data_reader import PAD_ID, GO_ID
 class TextCorrecterModel(object):
     """Sequence-to-sequence model used to correct grammatical errors in text.
 
-    NOTE: mostly copied from seq2seq_model.py; only modifications are:
+    NOTE: mostly copied from TensorFlow's seq2seq_model.py; only modifications
+    are:
      - the introduction of RMSProp as an optional optimization algorithm
      - the introduction of a "projection bias" that biases decoding towards
        selecting tokens that appeared in the input
