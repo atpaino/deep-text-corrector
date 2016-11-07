@@ -5,6 +5,9 @@ Defines utilities that allow for:
 2. Training a TextCorrecterModel using a given DataReader (i.e. a data source)
 3. Decoding predictions from a trained TextCorrecterModel
 
+The program is best run from the command line using the flags defined below or
+through an IPython notebook.
+
 Note: this has been mostly copied from Tensorflow's translate.py demo
 """
 
@@ -21,15 +24,22 @@ import numpy as np
 import tensorflow as tf
 
 from data_reader import EOS_ID
+from text_correcter_data_readers import MovieDialogReader, PTBDataReader
 
 from text_correcter_models import TextCorrecterModel
 
+tf.app.flags.DEFINE_string("config", "TestConfig", "Name of config to use.")
 tf.app.flags.DEFINE_string("data_reader_type", "MovieDialogReader",
                            "Type of data reader to use.")
-tf.app.flags.DEFINE_string("train_path", "/train", "Training data path.")
-tf.app.flags.DEFINE_string("val_path", "/val", "Validation data path.")
-tf.app.flags.DEFINE_string("test_path", "/test", "Testing data path.")
-tf.app.flags.DEFINE_string("config", "TestConfig", "Name of config to use.")
+tf.app.flags.DEFINE_string("train_path", "train", "Training data path.")
+tf.app.flags.DEFINE_string("val_path", "val", "Validation data path.")
+tf.app.flags.DEFINE_string("test_path", "test", "Testing data path.")
+tf.app.flags.DEFINE_string("model_path", "model", "Path where the model is "
+                                                  "saved.")
+tf.app.flags.DEFINE_boolean("decode", False, "Whether we should decode data "
+                                             "at test_path. The default is to "
+                                             "train a model and save it at "
+                                             "model_path.")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -91,7 +101,7 @@ class DefaultMovieDialogConfig():
     use_lstm = True
     use_rms_prop = True
 
-    projection_bias = 5.0
+    projection_bias = 0.0
 
 
 def create_model(session, forward_only, model_path, config=TestConfig()):
@@ -141,9 +151,9 @@ def train(data_reader, train_path, test_path, model_path):
         train_total_size = float(sum(train_bucket_sizes))
         print("Total train size: {}".format(train_total_size))
 
-        # A bucket scale is a list of increasing numbers from 0 to 1 that we'll use
-        # to select a bucket. Length of [scale[i], scale[i+1]] is proportional to
-        # the size if i-th training bucket, as used later.
+        # A bucket scale is a list of increasing numbers from 0 to 1 that
+        # we'll use to select a bucket. Length of [scale[i], scale[i+1]] is
+        # proportional to the size if i-th training bucket, as used later.
         train_buckets_scale = [
             sum(train_bucket_sizes[:i + 1]) / train_total_size
             for i in range(len(train_bucket_sizes))]
@@ -181,14 +191,14 @@ def train(data_reader, train_path, test_path, model_path):
                       "perplexity %.2f" % (
                           model.global_step.eval(), model.learning_rate.eval(),
                           step_time, perplexity))
-                # Decrease learning rate if no improvement was seen over last 3 times.
+                # Decrease learning rate if no improvement was seen over last
+                #  3 times.
                 if len(previous_losses) > 2 and loss > max(
                         previous_losses[-3:]):
                     sess.run(model.learning_rate_decay_op)
                 previous_losses.append(loss)
                 # Save checkpoint and zero timer and loss.
-                checkpoint_path = os.path.join(model_path,
-                                               "translate.ckpt")
+                checkpoint_path = os.path.join(model_path, "translate.ckpt")
                 model.saver.save(sess, checkpoint_path,
                                  global_step=model.global_step)
                 step_time, loss = 0.0, 0.0
@@ -211,25 +221,37 @@ def train(data_reader, train_path, test_path, model_path):
                 sys.stdout.flush()
 
 
-def decode(sess, model, data_reader, sentences, verbose=True):
+def decode(sess, model, data_reader, data_to_decode, verbose=True):
+    """
+
+    :param sess:
+    :param model:
+    :param data_reader:
+    :param data_to_decode: an iterable of token id lists representing the input
+        data we want to decode
+    :param verbose:
+    :return:
+    """
     model.batch_size = 1
-    id_to_word = {id: word for word, id in data_reader.word_to_id.items()}
 
     decoded_sentences = []
 
-    for sentence in sentences:
-        word_ids = data_reader.sentence_to_token_ids(sentence)
+    for tokens in data_to_decode:
+        token_ids = [data_reader.convert_token_to_id(token) for token in tokens]
 
         # Which bucket does it belong to?
         matching_buckets = [b for b in range(len(model.buckets))
-                            if model.buckets[b][0] > len(word_ids)]
+                            if model.buckets[b][0] > len(token_ids)]
         if not matching_buckets:
+            # The input string has more tokens than the largest bucket, so we
+            # have to skip it.
             continue
+
         bucket_id = min(matching_buckets)
 
         # Get a 1-element batch to feed the sentence to the model.
         encoder_inputs, decoder_inputs, target_weights = model.get_batch(
-            {bucket_id: [(word_ids, [])]}, bucket_id)
+            {bucket_id: [(token_ids, [])]}, bucket_id)
 
         # Get output logits for the sentence.
         _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
@@ -244,14 +266,13 @@ def decode(sess, model, data_reader, sentences, verbose=True):
         if EOS_ID in outputs:
             outputs = outputs[:outputs.index(EOS_ID)]
 
-        decoding = [id_to_word[word_id] if word_id in id_to_word
-                    else data_reader.unknown_token()
-                    for word_id in outputs]
+        decoding = data_reader.token_ids_to_tokens(outputs)
 
         if verbose:
             decoded_sentence = " ".join(decoding)
 
-            print("Input: {}".format(sentence))
+            print("Input: {}".format(
+                " ".join(data_reader.token_ids_to_tokens(token_ids))))
             print("Output: {}\n".format(decoded_sentence))
 
         decoded_sentences.append(decoding)
@@ -259,14 +280,48 @@ def decode(sess, model, data_reader, sentences, verbose=True):
     return decoded_sentences
 
 
+def decode_sentence(sess, model, data_reader, sentence, verbose=True):
+    """Used with InteractiveSession in an IPython notebook."""
+    return decode(sess, model, data_reader, sentence.split(), verbose)
+
+
 def main(_):
-    pass
-    # if FLAGS.self_test:
-    #     self_test()
-    # elif FLAGS.decode:
-    #     decode()
-    # else:
-    #     train()
+    # Determine which config we should use.
+    if FLAGS.config == "TestConfig":
+        config = TestConfig()
+    elif FLAGS.config == "DefaultMovieDialogConfig":
+        config = DefaultMovieDialogConfig()
+    elif FLAGS.config == "DefaultPTBConfig":
+        config = DefaultPTBConfig()
+    else:
+        raise ValueError("config argument not recognized; must be one of: "
+                         "TestConfig, DefaultPTBConfig, "
+                         "DefaultMovieDialogConfig")
+
+    # Determine which kind of DataReader we want to use.
+    if FLAGS.data_reader_type == "MovieDialogReader":
+        data_reader = MovieDialogReader(config, FLAGS.train_path)
+    elif FLAGS.data_reader_type == "PTBDataReader":
+        data_reader = PTBDataReader(config, FLAGS.train_path)
+    else:
+        raise ValueError("data_reader_type argument not recognized; must be "
+                         "one of: MovieDialogReader, PTBDataReader")
+
+    if FLAGS.decode:
+        # Decode test sentences.
+        with tf.Session() as session:
+            model = create_model(session, True, FLAGS.model_path, config=config)
+            print("Loaded model. Beginning decoding.")
+            decodings = decode(session, model=model, data_reader=data_reader,
+                               data_to_decode=data_reader.read_tokens(
+                                   FLAGS.test_path), verbose=False)
+            # Write the decoded tokens to stdout.
+            for tokens in decodings:
+                print(" ".join(tokens))
+                sys.stdout.flush()
+    else:
+        print("Training model.")
+        train(data_reader, FLAGS.train_path, FLAGS.val_path, FLAGS.model_path)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ GO_TOKEN = "GO"
 
 class DataReader(object):
 
-    def __init__(self, train_path, config, special_tokens=(), dataset_copies=1):
+    def __init__(self, config, train_path, special_tokens=(), dataset_copies=1):
         self.config = config
         self.dataset_copies = dataset_copies
 
@@ -37,7 +37,7 @@ class DataReader(object):
         vocabulary[0:0] = special_tokens
         self.token_to_id = dict(
             zip(vocabulary[:max_vocabulary_size], range(max_vocabulary_size)))
-        self.id_to_token = {v: k for v, k in self.token_to_id.items()}
+        self.id_to_token = {v: k for k, v in self.token_to_id.items()}
 
     def read_tokens(self, path):
         """
@@ -49,7 +49,7 @@ class DataReader(object):
         """
         raise NotImplementedError("Must implement read_tokens")
 
-    def read_token_samples(self, path):
+    def read_samples_by_string(self, path):
         """
         Reads the given file line by line and yields the word-form of each
         derived sample.
@@ -81,11 +81,11 @@ class DataReader(object):
         """
         return [self.convert_token_to_id(word) for word in sentence.split()]
 
-    def token_ids_to_sentence(self, word_ids):
+    def token_ids_to_tokens(self, word_ids):
         """
-        Converts a list of word ids to a space-delimited string.
+        Converts a list of word ids to a list of their corresponding words.
         """
-        return " ".join([self.convert_id_to_token(word) for word in word_ids])
+        return [self.convert_id_to_token(word) for word in word_ids]
 
     def read_samples(self, path):
         """
@@ -93,7 +93,7 @@ class DataReader(object):
         :param path:
         :return:
         """
-        for source_words, target_words in self.read_token_samples(path):
+        for source_words, target_words in self.read_samples_by_string(path):
             source = [self.convert_token_to_id(word) for word in source_words]
             target = [self.convert_token_to_id(word) for word in target_words]
             target.append(EOS_ID)

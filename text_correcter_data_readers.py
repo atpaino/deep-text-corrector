@@ -26,7 +26,7 @@ class PTBDataReader(DataReader):
 
         self.UNKNOWN_ID = self.token_to_id[PTBDataReader.UNKNOWN_TOKEN]
 
-    def read_token_samples(self, path):
+    def read_samples_by_string(self, path):
 
         for line in self.read_tokens(path):
             source = []
@@ -89,7 +89,7 @@ class MovieDialogReader(DataReader):
 
         self.UNKNOWN_ID = self.token_to_id[MovieDialogReader.UNKNOWN_TOKEN]
 
-    def read_token_samples(self, path):
+    def read_samples_by_string(self, path):
         for tokens in self.read_tokens(path):
             source = []
             target = []
