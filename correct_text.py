@@ -89,7 +89,7 @@ class DefaultMovieDialogConfig():
     steps_per_checkpoint = 100
     max_steps = 20000
 
-    max_vocabulary_size = 10000  # 40,000 did worse
+    max_vocabulary_size = 40000
 
     size = 512
     num_layers = 2
@@ -99,7 +99,7 @@ class DefaultMovieDialogConfig():
     learning_rate_decay_factor = 0.99
 
     use_lstm = True
-    use_rms_prop = True
+    use_rms_prop = False
 
     projection_bias = 0.0
 
@@ -227,7 +227,7 @@ def decode(sess, model, data_reader, data_to_decode, verbose=True):
     :param sess:
     :param model:
     :param data_reader:
-    :param data_to_decode: an iterable of token id lists representing the input
+    :param data_to_decode: an iterable of token lists representing the input
         data we want to decode
     :param verbose:
     :return:
@@ -278,7 +278,7 @@ def decode(sess, model, data_reader, data_to_decode, verbose=True):
 
 def decode_sentence(sess, model, data_reader, sentence, verbose=True):
     """Used with InteractiveSession in an IPython notebook."""
-    return decode(sess, model, data_reader, sentence.split(), verbose)
+    return next(decode(sess, model, data_reader, [sentence.split()], verbose))
 
 
 def main(_):
