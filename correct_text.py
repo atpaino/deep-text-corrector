@@ -221,7 +221,8 @@ def train(data_reader, train_path, test_path, model_path):
                 sys.stdout.flush()
 
 
-def decode(sess, model, data_reader, data_to_decode, verbose=True):
+def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
+    verbose=True):
     """
 
     :param sess:
@@ -233,6 +234,7 @@ def decode(sess, model, data_reader, data_to_decode, verbose=True):
     :return:
     """
     model.batch_size = 1
+    K = 10
 
     for tokens in data_to_decode:
         token_ids = [data_reader.convert_token_to_id(token) for token in tokens]
@@ -254,6 +256,46 @@ def decode(sess, model, data_reader, data_to_decode, verbose=True):
         # Get output logits for the sentence.
         _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
                                          target_weights, bucket_id, True)
+
+        # Get top k outputs along with their probs.
+        # Blergh there's an element for every step...
+        partitioned_logits = [(np.argpartition(logit, K, axis=1), logit) for
+                              logit in output_logits]
+        top_k_outputs = [[(i, logit[i]) for i in partitioned_logit[:K]] for
+                         partitioned_logit, logit in partitioned_logits]
+
+        outputs = []
+        for logit in output_logits:
+            # logit := single step in time, np array
+            # find top k according to the model
+            partitioned_logit = np.argpartition(logit, K)
+            top_k = [(i, logit[i]) for i in partitioned_logit[:K]]
+            adjusted_top_k = []
+            most_likely_output = None
+            max_prob = 0.0
+            for token_id, prob in top_k:
+                token = data_reader.convert_id_to_token(token_id)
+
+                # TODO: detect UNK, treat specially
+                # that is, find the most likely unk replacement word (a word
+                # not present in the model's vocab) according
+                # to the n-gram model and use it here
+
+                # Get prob from the model.
+                ngram_prob = ngram_model.prob(token, context=outputs,
+                                              original_input=tokens)
+
+                adj_prob = ngram_prob + prob
+                if adj_prob > max_prob:
+                    most_likely_output = token
+
+            if most_likely_output == data_reader.convert_token_to_id(EOS_ID):
+                break
+
+            outputs.append(most_likely_output)
+
+            pass
+
 
         # This is a greedy decoder - outputs are just argmaxes of output_logits.
         # TODO(atpaino) use beam search? Would require modifying the "loop

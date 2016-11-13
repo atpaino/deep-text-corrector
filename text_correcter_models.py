@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 import random
+from collections import defaultdict
 
 import numpy as np
 import tensorflow as tf
@@ -122,6 +123,10 @@ class TextCorrecterModel(object):
 
             projection_bias = b + input_bias
 
+            # Redefined seq2seq to allow for the injection of a special decoding
+            # function that leverages an n-gram model over the inputs.
+            # TODO: construct function that encloses the mini n-gram model
+            # derived from encoder inputs.
             return tf.nn.seq2seq.embedding_attention_seq2seq(
                 encoder_inputs, decoder_inputs, cell,
                 num_encoder_symbols=source_vocab_size,
@@ -129,6 +134,7 @@ class TextCorrecterModel(object):
                 embedding_size=size,
                 output_projection=(w, projection_bias),
                 feed_previous=do_decode)
+                # loop_fn_factory=build_decoder_fn_factory(encoder_inputs))
 
         # Training outputs and losses.
         if forward_only:
@@ -307,3 +313,101 @@ class TextCorrecterModel(object):
             batch_weights.append(batch_weight)
         return batch_encoder_inputs, batch_decoder_inputs, batch_weights
 
+
+class BiasedNGramModel(object):
+    """Combines n-gram models over the training corpus and the encoder input."""
+
+    class NGramModel(object):
+
+        def __init__(self, data, fake_backoff_discount=0.0):
+            self.fake_backoff_discount = fake_backoff_discount
+
+            unigram_model_counts = defaultdict(int)
+            unigram_model_partition = 0
+            bigram_model_counts = defaultdict(int)
+            bigram_model_partitions = defaultdict(int)
+
+            # Count all the things.
+            for tokens in data:
+                prev_token = BiasedNGramModel.LEFT_PAD
+                for token in tokens:
+                    unigram_model_counts[token] += 1
+                    unigram_model_partition += 1
+                    bigram_model_counts[(prev_token, token)] += 1
+                    bigram_model_partitions[prev_token] += 1
+
+            self.unigram_model_counts = unigram_model_counts
+            self.unigram_model_partition = unigram_model_partition
+            self.bigram_model_counts = bigram_model_counts
+            self.bigram_model_partition = bigram_model_partitions
+
+        def prob(self, word, context, k=0):
+            # We only go up to bigram models at the moment.
+            if len(context) == 0:
+                prev_word = BiasedNGramModel.LEFT_PAD
+            else:
+                prev_word = context[-1]
+
+            # TODO: Katz-backoff and Good-Turing discounting
+            if self.bigram_model_counts[(prev_word, word)] > k:
+                # Use the bigram model.
+                prob = (1.0 * self.bigram_model_counts[(prev_word,
+                                                        word)] /
+                        self.bigram_model_partition[prev_word])
+            elif self.unigram_model_counts[word] > k:
+                prob = (
+                    self.fake_backoff_discount * self.unigram_model_counts[
+                        word] /
+                    self.unigram_model_partition)
+            else:
+                # Fake prob of unseen.
+                prob = 0.0001
+
+            return prob
+
+    LEFT_PAD = "LPAD"
+
+    def __init__(self, data_reader, train_path):
+        self.corpus_model = BiasedNGramModel.NGramModel(
+            data_reader.read_tokens(train_path))
+
+    def prob(self, word, context, original_input):
+        """
+
+        :param word:
+        :param context:
+        :param original_input: list of words
+        :return:
+        """
+        # The idea here is that the unigram prob dist from the input model is
+        # still highly relevant, especially in the context of the model having
+        # "corrected away" the relevant bigram from the input.
+        input_model = BiasedNGramModel.NGramModel([original_input],
+                                                  fake_backoff_discount=0.8)
+
+        p_input_model = input_model.prob(word, context)
+        p_corpus = self.corpus_model.prob(word, context)
+
+        # Totally made up mixture.
+        return 0.8 * p_input_model + 0.2 * p_corpus
+
+
+#
+# def build_decoder_fn_factory(input_tokens):
+#     # input_tokens is a tensor of blah blah. whole batch?
+#     # Build n-gram model
+#
+#     def decoder_fn_factory(embedding, output_projection=None,
+#                            update_embedding=True):
+#         # Similar to _extract_argmax_and_embed, but here we bias things by
+#         # the n-gram model.
+#         def decoder_fn(prev_output, i, decoder_outputs):
+#             # decoder outputs thus far.
+#
+#             # note: we're still operating on a batch of tensors. every real
+#             # operation needs to be a tf op.
+#
+#
+#             return embed_prev, embed_symbol
+#
+#     return decoder_fn_factory
