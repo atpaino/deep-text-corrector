@@ -60,21 +60,31 @@ class DataReader(object):
         """
         raise NotImplementedError("Must implement read_word_samples")
 
-    def convert_token_to_id(self, word):
+    def unknown_token(self):
+        raise NotImplementedError("Must implement read_word_samples")
+
+    def convert_token_to_id(self, token):
         """
 
-        :param word:
+        :param token:
         :return:
         """
-        raise NotImplementedError("Must implement convert_word_to_id")
+        token_with_id = token if token in self.token_to_id else \
+            self.unknown_token()
+        return self.token_to_id[token_with_id]
 
-    def convert_id_to_token(self, word_id):
+    def convert_id_to_token(self, token_id):
+        return self.id_to_token[token_id]
+
+    def is_unknown_token(self, token):
         """
+        True if the given token is out of the vocabulary used or if it is the
+        actual unknown token.
 
-        :param i
+        :param token:
         :return:
         """
-        raise NotImplementedError("Must implement convert_word_to_id")
+        return token not in self.token_to_id or token == self.unknown_token()
 
     def sentence_to_token_ids(self, sentence):
         """

@@ -314,7 +314,7 @@ class TextCorrecterModel(object):
         return batch_encoder_inputs, batch_decoder_inputs, batch_weights
 
 
-class BiasedNGramModel(object):
+class InputBiasedNGramModel(object):
     """Combines n-gram models over the training corpus and the encoder input."""
 
     class NGramModel(object):
@@ -329,12 +329,14 @@ class BiasedNGramModel(object):
 
             # Count all the things.
             for tokens in data:
-                prev_token = BiasedNGramModel.LEFT_PAD
+                prev_token = InputBiasedNGramModel.LEFT_PAD
                 for token in tokens:
                     unigram_model_counts[token] += 1
                     unigram_model_partition += 1
                     bigram_model_counts[(prev_token, token)] += 1
                     bigram_model_partitions[prev_token] += 1
+
+                    prev_token = token
 
             self.unigram_model_counts = unigram_model_counts
             self.unigram_model_partition = unigram_model_partition
@@ -342,9 +344,16 @@ class BiasedNGramModel(object):
             self.bigram_model_partition = bigram_model_partitions
 
         def prob(self, word, context, k=0):
+            """
+
+            :param word:
+            :param context: list of previous words
+            :param k:
+            :return:
+            """
             # We only go up to bigram models at the moment.
             if len(context) == 0:
-                prev_word = BiasedNGramModel.LEFT_PAD
+                prev_word = InputBiasedNGramModel.LEFT_PAD
             else:
                 prev_word = context[-1]
 
@@ -368,7 +377,7 @@ class BiasedNGramModel(object):
     LEFT_PAD = "LPAD"
 
     def __init__(self, data_reader, train_path):
-        self.corpus_model = BiasedNGramModel.NGramModel(
+        self.corpus_model = InputBiasedNGramModel.NGramModel(
             data_reader.read_tokens(train_path))
 
     def prob(self, word, context, original_input):
@@ -382,8 +391,8 @@ class BiasedNGramModel(object):
         # The idea here is that the unigram prob dist from the input model is
         # still highly relevant, especially in the context of the model having
         # "corrected away" the relevant bigram from the input.
-        input_model = BiasedNGramModel.NGramModel([original_input],
-                                                  fake_backoff_discount=0.8)
+        input_model = InputBiasedNGramModel.NGramModel(
+            [original_input], fake_backoff_discount=0.8)
 
         p_input_model = input_model.prob(word, context)
         p_corpus = self.corpus_model.prob(word, context)

@@ -49,12 +49,8 @@ class PTBDataReader(DataReader):
 
             yield source, target
 
-    def convert_token_to_id(self, word):
-        return self.token_to_id[
-            word] if word in self.token_to_id else self.UNKNOWN_ID
-
-    def convert_id_to_token(self, word_id):
-        return self.id_to_token[word_id]
+    def unknown_token(self):
+        return PTBDataReader.UNKNOWN_TOKEN
 
     def read_tokens(self, path):
         with open(path, "r") as f:
@@ -110,12 +106,8 @@ class MovieDialogReader(DataReader):
 
             yield source, target
 
-    def convert_token_to_id(self, word):
-        return self.token_to_id[
-            word] if word in self.token_to_id else self.UNKNOWN_ID
-
-    def convert_id_to_token(self, word_id):
-        return self.id_to_token[word_id]
+    def unknown_token(self):
+        return MovieDialogReader.UNKNOWN_TOKEN
 
     def read_tokens(self, path):
         with open(path, "r") as f:

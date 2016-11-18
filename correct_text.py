@@ -222,7 +222,7 @@ def train(data_reader, train_path, test_path, model_path):
 
 
 def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
-    verbose=True):
+           verbose=True):
     """
 
     :param sess:
@@ -257,70 +257,100 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
         _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
                                          target_weights, bucket_id, True)
 
-        # Get top k outputs along with their probs.
-        # Blergh there's an element for every step...
-        partitioned_logits = [(np.argpartition(logit, K, axis=1), logit) for
-                              logit in output_logits]
-        top_k_outputs = [[(i, logit[i]) for i in partitioned_logit[:K]] for
-                         partitioned_logit, logit in partitioned_logits]
-
         outputs = []
+        oov_input_tokens = [token for token in tokens if
+                            data_reader.is_unknown_token(token)]
         for logit in output_logits:
+
+            max_likelihood_token_id = int(np.argmax(logit, axis=1))
+            # First check to see if this logit most likely points to the EOS
+            # identifier.
+            if max_likelihood_token_id == EOS_ID:
+                # TODO: model the EOS token in the n-gram model as well.
+                break
+
+            if ngram_model is None:
+                outputs.append(
+                    data_reader.convert_id_to_token(max_likelihood_token_id))
+                continue
+
             # logit := single step in time, np array
-            # find top k according to the model
-            partitioned_logit = np.argpartition(logit, K)
-            top_k = [(i, logit[i]) for i in partitioned_logit[:K]]
-            adjusted_top_k = []
+            # Get top k outputs along with their probs.
+            # TODO: apply softmax to logit
+            squeezed_logit = np.squeeze(logit)
+            partitioned_logit = np.argpartition(squeezed_logit,
+                                                len(squeezed_logit) - K)
+            top_k = [(i, squeezed_logit[i]) for i in partitioned_logit[-K:]]
+
             most_likely_output = None
             max_prob = 0.0
             for token_id, prob in top_k:
                 token = data_reader.convert_id_to_token(token_id)
 
-                # TODO: detect UNK, treat specially
-                # that is, find the most likely unk replacement word (a word
-                # not present in the model's vocab) according
-                # to the n-gram model and use it here
+                if data_reader.is_unknown_token(token):
+                    # TODO: detect UNK, treat specially
+                    # that is, find the most likely unk replacement word (a word
+                    # not present in the model's vocab) according
+                    # to the n-gram model and use it here
 
-                # Get prob from the model.
-                ngram_prob = ngram_model.prob(token, context=outputs,
-                                              original_input=tokens)
+                    # Find the most probable OOV token.
+                    max_oov_prob = 0.0
+                    most_probable_oov_token = None
 
+                    for oov_token in oov_input_tokens:
+                        oov_ngram_prob = ngram_model.prob(oov_token,
+                                                          context=outputs,
+                                                          original_input=tokens)
+                        if oov_ngram_prob > max_oov_prob:
+                            max_oov_prob = oov_ngram_prob
+                            most_probable_oov_token = oov_token
+
+                    # Replace the "unkown" token with the most probable OOV
+                    # token from the input.
+                    ngram_prob = max_oov_prob
+                    token = most_probable_oov_token
+                else:
+                    ngram_prob = ngram_model.prob(token, context=outputs,
+                                                  original_input=tokens)
+
+                # This is now a pseudo probability as we're not scaling
+                # properly.
+                # TODO: experiment with various weightings here.
                 adj_prob = ngram_prob + prob
-                if adj_prob > max_prob:
+                print("adj prob of {} is {}, orig prob is {}".format(token,
+                                                                     adj_prob,
+                                                                     prob))
+                if most_likely_output is None or adj_prob > max_prob:
                     most_likely_output = token
+                    max_prob = adj_prob
 
-            if most_likely_output == data_reader.convert_token_to_id(EOS_ID):
-                break
-
+            print("Using token {}".format(most_likely_output))
             outputs.append(most_likely_output)
 
-            pass
-
-
-        # This is a greedy decoder - outputs are just argmaxes of output_logits.
-        # TODO(atpaino) use beam search? Would require modifying the "loop
-        # function" used in embedding_attention_decoder.
-        outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
-
-        # If there is an EOS symbol in outputs, cut them at that point.
-        if EOS_ID in outputs:
-            outputs = outputs[:outputs.index(EOS_ID)]
-
-        decoding = data_reader.token_ids_to_tokens(outputs)
+        # # This is a greedy decoder - outputs are just argmaxes of output_logits.
+        # # TODO(atpaino) use beam search? Would require modifying the "loop
+        # # function" used in embedding_attention_decoder.
+        # outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
+        #
+        # # If there is an EOS symbol in outputs, cut them at that point.
+        # if EOS_ID in outputs:
+        #     outputs = outputs[:outputs.index(EOS_ID)]
 
         if verbose:
-            decoded_sentence = " ".join(decoding)
+            decoded_sentence = " ".join(outputs)
 
             print("Input: {}".format(
                 " ".join(data_reader.token_ids_to_tokens(token_ids))))
             print("Output: {}\n".format(decoded_sentence))
 
-        yield decoding
+        yield outputs
 
 
-def decode_sentence(sess, model, data_reader, sentence, verbose=True):
+def decode_sentence(sess, model, data_reader, sentence, ngram_model=None,
+                    verbose=True):
     """Used with InteractiveSession in an IPython notebook."""
-    return next(decode(sess, model, data_reader, [sentence.split()], verbose))
+    return next(decode(sess, model, data_reader, [sentence.split()],
+                       ngram_model=ngram_model, verbose=verbose))
 
 
 def main(_):
