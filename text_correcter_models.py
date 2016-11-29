@@ -314,7 +314,7 @@ class TextCorrecterModel(object):
         return batch_encoder_inputs, batch_decoder_inputs, batch_weights
 
 
-class InputBiasedNGramModel(object):
+class InputBiasedLanguageModel(object):
     """Combines n-gram models over the training corpus and the encoder input."""
 
     class NGramModel(object):
@@ -327,9 +327,8 @@ class InputBiasedNGramModel(object):
             bigram_model_counts = defaultdict(int)
             bigram_model_partitions = defaultdict(int)
 
-            # Count all the things.
             for tokens in data:
-                prev_token = InputBiasedNGramModel.LEFT_PAD
+                prev_token = InputBiasedLanguageModel.LEFT_PAD
                 for token in tokens:
                     unigram_model_counts[token] += 1
                     unigram_model_partition += 1
@@ -353,7 +352,7 @@ class InputBiasedNGramModel(object):
             """
             # We only go up to bigram models at the moment.
             if len(context) == 0:
-                prev_word = InputBiasedNGramModel.LEFT_PAD
+                prev_word = InputBiasedLanguageModel.LEFT_PAD
             else:
                 prev_word = context[-1]
 
@@ -377,8 +376,15 @@ class InputBiasedNGramModel(object):
     LEFT_PAD = "LPAD"
 
     def __init__(self, data_reader, train_path):
-        self.corpus_model = InputBiasedNGramModel.NGramModel(
+        self.corpus_model = InputBiasedLanguageModel.NGramModel(
             data_reader.read_tokens(train_path))
+
+        # TODO: move this to a different "model"?
+        corrective_tokens = set()
+        for source_tokens, target_tokens in \
+            data_reader.read_samples_by_string(train_path):
+            corrective_tokens.update(set(target_tokens) - set(source_tokens))
+        self.corrective_tokens = corrective_tokens
 
     def prob(self, word, context, original_input):
         """
@@ -391,7 +397,7 @@ class InputBiasedNGramModel(object):
         # The idea here is that the unigram prob dist from the input model is
         # still highly relevant, especially in the context of the model having
         # "corrected away" the relevant bigram from the input.
-        input_model = InputBiasedNGramModel.NGramModel(
+        input_model = InputBiasedLanguageModel.NGramModel(
             [original_input], fake_backoff_discount=0.8)
 
         p_input_model = input_model.prob(word, context)
@@ -400,23 +406,5 @@ class InputBiasedNGramModel(object):
         # Totally made up mixture.
         return 0.8 * p_input_model + 0.2 * p_corpus
 
-
-#
-# def build_decoder_fn_factory(input_tokens):
-#     # input_tokens is a tensor of blah blah. whole batch?
-#     # Build n-gram model
-#
-#     def decoder_fn_factory(embedding, output_projection=None,
-#                            update_embedding=True):
-#         # Similar to _extract_argmax_and_embed, but here we bias things by
-#         # the n-gram model.
-#         def decoder_fn(prev_output, i, decoder_outputs):
-#             # decoder outputs thus far.
-#
-#             # note: we're still operating on a batch of tensors. every real
-#             # operation needs to be a tf op.
-#
-#
-#             return embed_prev, embed_symbol
-#
-#     return decoder_fn_factory
+    def is_corrective_token(self, token):
+        return token in self.corrective_tokens

@@ -89,7 +89,9 @@ class DefaultMovieDialogConfig():
     steps_per_checkpoint = 100
     max_steps = 20000
 
-    max_vocabulary_size = 40000
+    # The OOV resolution scheme used in decode() allows us to use a much smaller
+    # vocabulary.
+    max_vocabulary_size = 2000
 
     size = 512
     num_layers = 2
@@ -257,9 +259,12 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
         _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
                                          target_weights, bucket_id, True)
 
-        outputs = []
         oov_input_tokens = [token for token in tokens if
                             data_reader.is_unknown_token(token)]
+
+        outputs = []
+        next_oov_token_idx = 0
+
         for logit in output_logits:
 
             max_likelihood_token_id = int(np.argmax(logit, axis=1))
@@ -275,12 +280,14 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
                 continue
 
             # logit := single step in time, np array
-            # Get top k outputs along with their probs.
-            # TODO: apply softmax to logit
-            squeezed_logit = np.squeeze(logit)
-            partitioned_logit = np.argpartition(squeezed_logit,
-                                                len(squeezed_logit) - K)
-            top_k = [(i, squeezed_logit[i]) for i in partitioned_logit[-K:]]
+            # Take the softmax of the current logits.
+            logit = np.squeeze(logit)
+            exp_logits = np.exp(logit)
+            logit = exp_logits / np.sum(exp_logits)
+
+            # Get top k outputs along with their probabilities.
+            partitioned_logit = np.argpartition(logit, len(logit) - K)
+            top_k = [(i, logit[i]) for i in partitioned_logit[-K:]]
 
             most_likely_output = None
             max_prob = 0.0
@@ -288,59 +295,52 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
                 token = data_reader.convert_id_to_token(token_id)
 
                 if data_reader.is_unknown_token(token):
-                    # TODO: detect UNK, treat specially
-                    # that is, find the most likely unk replacement word (a word
-                    # not present in the model's vocab) according
-                    # to the n-gram model and use it here
-
-                    # Find the most probable OOV token.
-                    max_oov_prob = 0.0
-                    most_probable_oov_token = None
-
-                    for oov_token in oov_input_tokens:
-                        oov_ngram_prob = ngram_model.prob(oov_token,
-                                                          context=outputs,
-                                                          original_input=tokens)
-                        if oov_ngram_prob > max_oov_prob:
-                            max_oov_prob = oov_ngram_prob
-                            most_probable_oov_token = oov_token
-
-                    # Replace the "unkown" token with the most probable OOV
+                    # Replace the "unknown" token with the most probable OOV
                     # token from the input.
-                    ngram_prob = max_oov_prob
-                    token = most_probable_oov_token
-                else:
-                    ngram_prob = ngram_model.prob(token, context=outputs,
-                                                  original_input=tokens)
+                    if next_oov_token_idx < len(oov_input_tokens):
+                        # If we still have OOV input tokens available,
+                        # pick the next available one.
+                        token = oov_input_tokens[next_oov_token_idx]
+                    else:
+                        # If we've already used all OOV input tokens,
+                        # then ensure we do not select the "UNK" token.
+                        continue
+
+                # TODO: run a test to see if this being non-zero is helpful.
+                ngram_prob = ngram_model.prob(token, context=outputs,
+                                              original_input=tokens)
+                # ngram_prob = 0.0
+
+                # Inject a strong bias that all output tokens either appeared in
+                # the input or appeared as "corrective" tokens during training.
+                if token not in tokens and not ngram_model.is_corrective_token(
+                        token):
+                    continue
 
                 # This is now a pseudo probability as we're not scaling
                 # properly.
                 # TODO: experiment with various weightings here.
                 adj_prob = ngram_prob + prob
-                print("adj prob of {} is {}, orig prob is {}".format(token,
-                                                                     adj_prob,
-                                                                     prob))
+                if verbose:
+                    print("adj prob of {} is {}, orig prob is {}".format(
+                        token, adj_prob, prob))
                 if most_likely_output is None or adj_prob > max_prob:
                     most_likely_output = token
                     max_prob = adj_prob
 
-            print("Using token {}".format(most_likely_output))
-            outputs.append(most_likely_output)
+            # Advance to the next OOV input token if we ended up selecting the
+            # current one.
+            if data_reader.is_unknown_token(most_likely_output):
+                next_oov_token_idx += 1
 
-        # # This is a greedy decoder - outputs are just argmaxes of output_logits.
-        # # TODO(atpaino) use beam search? Would require modifying the "loop
-        # # function" used in embedding_attention_decoder.
-        # outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
-        #
-        # # If there is an EOS symbol in outputs, cut them at that point.
-        # if EOS_ID in outputs:
-        #     outputs = outputs[:outputs.index(EOS_ID)]
+            if verbose:
+                print("Using token {}".format(most_likely_output))
+            outputs.append(most_likely_output)
 
         if verbose:
             decoded_sentence = " ".join(outputs)
 
-            print("Input: {}".format(
-                " ".join(data_reader.token_ids_to_tokens(token_ids))))
+            print("Input: {}".format(" ".join(tokens)))
             print("Output: {}\n".format(decoded_sentence))
 
         yield outputs
