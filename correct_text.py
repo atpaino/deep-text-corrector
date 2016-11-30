@@ -19,7 +19,9 @@ import math
 import os
 import sys
 import time
+from collections import defaultdict
 
+import nltk
 import numpy as np
 import tensorflow as tf
 
@@ -351,6 +353,68 @@ def decode_sentence(sess, model, data_reader, sentence, ngram_model=None,
     """Used with InteractiveSession in an IPython notebook."""
     return next(decode(sess, model, data_reader, [sentence.split()],
                        ngram_model=ngram_model, verbose=verbose))
+
+
+def evaluate_accuracy(sess, model, data_reader, test_path, max_samples=None):
+    """Evaluates the accuracy and BLEU score of the given model."""
+    # Build a collection of "baseline" and model-based hypotheses, where the
+    # baseline is just the (potentially errant) source sequence.
+    baseline_hypotheses = defaultdict(list)  # The model's input
+    model_hypotheses = defaultdict(list)  # The actual model's predictions
+    targets = defaultdict(list)  # Groundtruth
+
+    n_samples_by_bucket = defaultdict(int)
+    n_correct_model_by_bucket = defaultdict(int)
+    n_correct_baseline_by_bucket = defaultdict(int)
+    n_samples = 0
+
+    # Evaluate the model against all samples in the test data set.
+    for source, target in data_reader.read_samples_by_string(test_path):
+
+        matching_buckets = [i for i, bucket in enumerate(model.buckets) if
+                            len(source) < bucket[0]]
+        if not matching_buckets:
+            continue
+
+        bucket_id = matching_buckets[0]
+
+        decoding = next(
+            decode(sess, model, data_reader, [source], verbose=False))
+        model_hypotheses[bucket_id].append(decoding)
+        if decoding == target:
+            n_correct_model_by_bucket[bucket_id] += 1
+
+        baseline_hypotheses[bucket_id].append(source)
+        if source == target:
+            n_correct_baseline_by_bucket[bucket_id] += 1
+
+        # nltk.corpus_bleu expects a list of one or more reference
+        # tranlsations per sample, so we wrap the target list in another list
+        # here.
+        targets[bucket_id].append([target])
+
+        n_samples_by_bucket[bucket_id] += 1
+        n_samples += 1
+
+        if max_samples is not None and n_samples > max_samples:
+            break
+
+    # Measure the corpus BLEU score and accuracy for the model and baseline
+    # across all buckets.
+    for bucket_id in targets.keys():
+        baseline_bleu_score = nltk.translate.bleu_score.corpus_bleu(
+            targets[bucket_id], baseline_hypotheses[bucket_id])
+        model_bleu_score = nltk.translate.bleu_score.corpus_bleu(
+            targets[bucket_id], model_hypotheses[bucket_id])
+        print("Bucket {}: {}".format(bucket_id, model.buckets[bucket_id]))
+        print("\tBaseline BLEU = {:.4f}\n\tModel BLEU = {:.4f}".format(
+            baseline_bleu_score, model_bleu_score))
+        print("\tBaseline Accuracy: {:.4f}".format(
+            1.0 * n_correct_baseline_by_bucket[bucket_id] /
+            n_samples_by_bucket[bucket_id]))
+        print("\tModel Accuracy: {:.4f}".format(
+            1.0 * n_correct_model_by_bucket[bucket_id] /
+            n_samples_by_bucket[bucket_id]))
 
 
 def main(_):
