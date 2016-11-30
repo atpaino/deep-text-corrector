@@ -10,25 +10,32 @@ The goal of this project is to train sequence-to-sequence models that are capabl
 ## Correcting Grammatical Errors with Deep Learning
 The basic idea behind this project is that we can generate large training data sets for the task of grammar correction by starting with grammatically correct samples and introducing small errors to produce input-output pairs.
 
-Instead of using the most probable decoding according to the seq2seq model, this project takes advantage of the unique structure of the problem in a post-processing step that biases the final decoding toward the original input sequence. We do this by introducing a custom language model named `InputBiasedNGramModel`. This model additionally helps us to resolve out-of-vocabulary words by injecting a strong prior that rare words in the output should have been in the input.
+Instead of using the most probable decoding according to the seq2seq model, this project takes advantage of the unique structure of the problem in a post-processing step that biases the final decoding toward the original input sequence.
+Specifically, it imposes the prior that all tokens in a decoded sequence should either exist in the input sequence or belong to a set of "corrective" tokens, where the "corrective" token set contains all tokens seen in the target, but not the source, for at least one sample in the training set. The intuition here is that the errors seen during training involve the misuse of a relatively small vocabulary of common words (e.g. "the", "an", "their") and that the model should only be allowed to perform corrections in this domain.
 
-### InputBiasedNGramModel
+### `InputBiasedLanguageModel`
 TODO
-
 
 ## Implementation
 This project reuses and slightly extends TensorFlow's [`Seq2SeqModel`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/models/rnn/translate/seq2seq_model.py), which itself implements a sequence-to-sequence model with an attention mechanism as described in https://arxiv.org/pdf/1412.7449v3.pdf. The primary contributions of this project are:
 
 - `data_reader.py`: an abstract class that defines the interface for classes which are capable of reading a source data set and producing input-output pairs, where the input is a grammatically incorrect variant of a source sentence and the output is the original sentence.
 - `text_correcter_data_readers.py`: contains a few implementations of `DataReader`, one over the [Penn Treebank dataset](https://www.google.com/url?q=http://www.fit.vutbr.cz/~imikolov/rnnlm/simple-examples.tgz&usg=AFQjCNG0IP5OHusdIAdJIrrem-HMck9AzA) and one over the [Cornell Movie-Dialogs Corpus](http://www.cs.cornell.edu/~cristian/Cornell_Movie-Dialogs_Corpus.html).
-- `text_correcter_models.py`: contains a slightly modified version of `Seq2SeqModel` in addition to a custom language model, `InputBiasedNGramModel`, which is used in post-processing of the decoding derived from the sequence-to-sequence model. See [InputBiasedNGramModel](https://github.com/atpaino/deep-text-correcter#inputbiasedngrammodel) below for details on how these two models are combined to produce the final corrected sequence.
+- `text_correcter_models.py`: contains a slightly modified version of `Seq2SeqModel` in addition to a custom language model, `InputBiasedLanugageModel`, which is used in post-processing of the decoding derived from the sequence-to-sequence model. See [InputBiasedLanguageModel](https://github.com/atpaino/deep-text-correcter#inputbiasedngrammodel) for details on how these two models are combined to produce the final corrected sequence.
 - `correct_text.py`: a collection of helper functions that together allow for the training of a model and the usage of it to decode errant input sequences (at test time). This also defines a main method, and can be invoked from the command line. It was largely derived from TensorFlow's [`translate.py`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/models/rnn/translate/translate.py).
 - `TextCorrecter.ipynb`: an IPython notebook which ties together all of the above pieces to allow for the training and evaluation of the model in an interactive fashion.
 
-### Example usage
-
+### Example Usage
 TODO
 
 ## Experimental Results
 
+### Examples
+Decoding a sentence with a missing article:
+![Example sentence correction](example_correction.png)
+
+Example of the `InputBiasedLanguageModel` adjusting probabilities and avoiding a mistake (i.e. avoiding decoding "heart" when the correct token is "girlfriend"):
+![Example of the input biased language model in action](example_adjusting_probs.png)
+
+### Aggregate Performance
 TODO
