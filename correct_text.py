@@ -238,7 +238,7 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
     :return:
     """
     model.batch_size = 1
-    K = 10
+    K = 20
 
     for tokens in data_to_decode:
         token_ids = [data_reader.convert_token_to_id(token) for token in tokens]
@@ -266,6 +266,7 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
 
         outputs = []
         next_oov_token_idx = 0
+        next_source_token_idx = 0
 
         for logit in output_logits:
 
@@ -293,7 +294,12 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
 
             most_likely_output = None
             max_prob = 0.0
-            for token_id, prob in top_k:
+
+            # Also grab the probs of each source token.
+            candidate_tokens = set(top_k +
+                                   [(idx, logit[idx]) for idx in token_ids])
+
+            for token_id, prob in candidate_tokens:
                 token = data_reader.convert_id_to_token(token_id)
 
                 if data_reader.is_unknown_token(token):
@@ -315,8 +321,8 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
 
                 # Inject a strong bias that all output tokens either appeared in
                 # the input or appeared as "corrective" tokens during training.
-                if token not in tokens and not ngram_model.is_corrective_token(
-                        token):
+                if token not in tokens and not \
+                        ngram_model.is_corrective_token(token):
                     continue
 
                 # This is now a pseudo probability as we're not scaling
@@ -355,13 +361,17 @@ def decode_sentence(sess, model, data_reader, sentence, ngram_model=None,
                        ngram_model=ngram_model, verbose=verbose))
 
 
-def evaluate_accuracy(sess, model, data_reader, test_path, max_samples=None):
+def evaluate_accuracy(sess, model, data_reader, ngram_model, test_path,
+                      max_samples=None):
     """Evaluates the accuracy and BLEU score of the given model."""
+
     # Build a collection of "baseline" and model-based hypotheses, where the
     # baseline is just the (potentially errant) source sequence.
     baseline_hypotheses = defaultdict(list)  # The model's input
     model_hypotheses = defaultdict(list)  # The actual model's predictions
     targets = defaultdict(list)  # Groundtruth
+
+    errors = []
 
     n_samples_by_bucket = defaultdict(int)
     n_correct_model_by_bucket = defaultdict(int)
@@ -379,10 +389,13 @@ def evaluate_accuracy(sess, model, data_reader, test_path, max_samples=None):
         bucket_id = matching_buckets[0]
 
         decoding = next(
-            decode(sess, model, data_reader, [source], verbose=False))
+            decode(sess, model, data_reader, [source], ngram_model=ngram_model,
+                   verbose=False))
         model_hypotheses[bucket_id].append(decoding)
         if decoding == target:
             n_correct_model_by_bucket[bucket_id] += 1
+        else:
+            errors.append((decoding, target))
 
         baseline_hypotheses[bucket_id].append(source)
         if source == target:
@@ -415,6 +428,8 @@ def evaluate_accuracy(sess, model, data_reader, test_path, max_samples=None):
         print("\tModel Accuracy: {:.4f}".format(
             1.0 * n_correct_model_by_bucket[bucket_id] /
             n_samples_by_bucket[bucket_id]))
+
+    return errors
 
 
 def main(_):
