@@ -225,7 +225,16 @@ def train(data_reader, train_path, test_path, model_path):
                 sys.stdout.flush()
 
 
-def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
+def get_corrective_tokens(data_reader, train_path):
+    # TODO: this should be part of the model, learned during training
+    corrective_tokens = set()
+    for source_tokens, target_tokens in data_reader.read_samples_by_string(
+            train_path):
+        corrective_tokens.update(set(target_tokens) - set(source_tokens))
+    return corrective_tokens
+
+
+def decode(sess, model, data_reader, data_to_decode, corrective_tokens=set(),
            verbose=True):
     """
 
@@ -234,11 +243,16 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
     :param data_reader:
     :param data_to_decode: an iterable of token lists representing the input
         data we want to decode
+    :param corrective_tokens
     :param verbose:
     :return:
     """
     model.batch_size = 1
-    K = 20
+
+    corrective_tokens_mask = np.zeros(model.target_vocab_size)
+    corrective_tokens_mask[EOS_ID] = 1.0
+    for token in corrective_tokens:
+        corrective_tokens_mask[data_reader.convert_token_to_id(token)] = 1.0
 
     for tokens in data_to_decode:
         token_ids = [data_reader.convert_token_to_id(token) for token in tokens]
@@ -258,15 +272,15 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
             {bucket_id: [(token_ids, [])]}, bucket_id)
 
         # Get output logits for the sentence.
-        _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
-                                         target_weights, bucket_id, True)
+        _, _, output_logits = model.step(
+            sess, encoder_inputs, decoder_inputs, target_weights, bucket_id,
+            True, corrective_tokens=corrective_tokens_mask)
 
         oov_input_tokens = [token for token in tokens if
                             data_reader.is_unknown_token(token)]
 
         outputs = []
         next_oov_token_idx = 0
-        next_source_token_idx = 0
 
         for logit in output_logits:
 
@@ -274,76 +288,24 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
             # First check to see if this logit most likely points to the EOS
             # identifier.
             if max_likelihood_token_id == EOS_ID:
-                # TODO: model the EOS token in the n-gram model as well.
                 break
 
-            if ngram_model is None:
-                outputs.append(
-                    data_reader.convert_id_to_token(max_likelihood_token_id))
-                continue
+            token = data_reader.convert_id_to_token(max_likelihood_token_id)
+            if data_reader.is_unknown_token(token):
+                # Replace the "unknown" token with the most probable OOV
+                # token from the input.
+                if next_oov_token_idx < len(oov_input_tokens):
+                    # If we still have OOV input tokens available,
+                    # pick the next available one.
+                    token = oov_input_tokens[next_oov_token_idx]
+                    # Advance to the next OOV input token.
+                    next_oov_token_idx += 1
+                else:
+                    # If we've already used all OOV input tokens,
+                    # then we just leave the token as "UNK"
+                    pass
 
-            # logit := single step in time, np array
-            # Take the softmax of the current logits.
-            logit = np.squeeze(logit)
-            exp_logits = np.exp(logit)
-            logit = exp_logits / np.sum(exp_logits)
-
-            # Get top k outputs along with their probabilities.
-            partitioned_logit = np.argpartition(logit, len(logit) - K)
-            top_k = [(i, logit[i]) for i in partitioned_logit[-K:]]
-
-            most_likely_output = None
-            max_prob = 0.0
-
-            # Also grab the probs of each source token.
-            candidate_tokens = set(top_k +
-                                   [(idx, logit[idx]) for idx in token_ids])
-
-            for token_id, prob in candidate_tokens:
-                token = data_reader.convert_id_to_token(token_id)
-
-                if data_reader.is_unknown_token(token):
-                    # Replace the "unknown" token with the most probable OOV
-                    # token from the input.
-                    if next_oov_token_idx < len(oov_input_tokens):
-                        # If we still have OOV input tokens available,
-                        # pick the next available one.
-                        token = oov_input_tokens[next_oov_token_idx]
-                    else:
-                        # If we've already used all OOV input tokens,
-                        # then ensure we do not select the "UNK" token.
-                        continue
-
-                # TODO: run a test to see if this being non-zero is helpful.
-                ngram_prob = ngram_model.prob(token, context=outputs,
-                                              original_input=tokens)
-                # ngram_prob = 0.0
-
-                # Inject a strong bias that all output tokens either appeared in
-                # the input or appeared as "corrective" tokens during training.
-                if token not in tokens and not \
-                        ngram_model.is_corrective_token(token):
-                    continue
-
-                # This is now a pseudo probability as we're not scaling
-                # properly.
-                # TODO: experiment with various weightings here.
-                adj_prob = ngram_prob + prob
-                if verbose:
-                    print("adj prob of {} is {}, orig prob is {}".format(
-                        token, adj_prob, prob))
-                if most_likely_output is None or adj_prob > max_prob:
-                    most_likely_output = token
-                    max_prob = adj_prob
-
-            # Advance to the next OOV input token if we ended up selecting the
-            # current one.
-            if data_reader.is_unknown_token(most_likely_output):
-                next_oov_token_idx += 1
-
-            if verbose:
-                print("Using token {}".format(most_likely_output))
-            outputs.append(most_likely_output)
+            outputs.append(token)
 
         if verbose:
             decoded_sentence = " ".join(outputs)
@@ -354,14 +316,14 @@ def decode(sess, model, data_reader, data_to_decode, ngram_model=None,
         yield outputs
 
 
-def decode_sentence(sess, model, data_reader, sentence, ngram_model=None,
+def decode_sentence(sess, model, data_reader, sentence, corrective_tokens=set(),
                     verbose=True):
     """Used with InteractiveSession in an IPython notebook."""
     return next(decode(sess, model, data_reader, [sentence.split()],
-                       ngram_model=ngram_model, verbose=verbose))
+                       corrective_tokens=corrective_tokens, verbose=verbose))
 
 
-def evaluate_accuracy(sess, model, data_reader, ngram_model, test_path,
+def evaluate_accuracy(sess, model, data_reader, corrective_tokens, test_path,
                       max_samples=None):
     """Evaluates the accuracy and BLEU score of the given model."""
 
@@ -389,8 +351,8 @@ def evaluate_accuracy(sess, model, data_reader, ngram_model, test_path,
         bucket_id = matching_buckets[0]
 
         decoding = next(
-            decode(sess, model, data_reader, [source], ngram_model=ngram_model,
-                   verbose=False))
+            decode(sess, model, data_reader, [source],
+                   corrective_tokens=corrective_tokens, verbose=False))
         model_hypotheses[bucket_id].append(decoding)
         if decoding == target:
             n_correct_model_by_bucket[bucket_id] += 1

@@ -92,7 +92,7 @@ def _extract_argmax_and_embed(embedding, output_projection=None,
     Returns:
       A loop function.
     """
-    def loop_function(prev, _, decoder_outputs):
+    def loop_function(prev, _):
         # decoder outputs thus far.
         if output_projection is not None:
             prev = nn_ops.xw_plus_b(
@@ -636,7 +636,6 @@ def attention_decoder(decoder_inputs,
         if initial_state_attention:
             attns = attention(initial_state)
 
-        decoder_outputs = []
         for i, inp in enumerate(decoder_inputs):
             if i > 0:
                 variable_scope.get_variable_scope().reuse_variables()
@@ -646,10 +645,7 @@ def attention_decoder(decoder_inputs,
                     # inp is the embedding to be used as input next
                     # inp_index is the index of the token to be used as input
                     # next
-                    # decoder_outputs contains a list of the index of all tokens
-                    # emitted thus far.
-                    inp, inp_symbol = loop_function(prev, i, decoder_outputs)
-                    decoder_outputs.append(inp_symbol)
+                    inp, inp_symbol = loop_function(prev, i)
             # Merge input and previous attentions into one vector of the right size.
             input_size = inp.get_shape().with_rank(2)[1]
             if input_size.value is None:
@@ -671,8 +667,6 @@ def attention_decoder(decoder_inputs,
                 prev = output
             outputs.append(output)
 
-    # todo: somehow have outputs be influenced by the loop fn? or can we just
-    # redo this logic during decoding?
     return outputs, state
 
 

@@ -7,7 +7,12 @@ from collections import defaultdict
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import embedding_ops
+from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import nn_ops
 
+import seq2seq
 from data_reader import PAD_ID, GO_ID
 
 
@@ -24,7 +29,8 @@ class TextCorrecterModel(object):
     def __init__(self, source_vocab_size, target_vocab_size, buckets, size,
                  num_layers, max_gradient_norm, batch_size, learning_rate,
                  learning_rate_decay_factor, use_lstm=False,
-                 num_samples=512, forward_only=False, config=None):
+                 num_samples=512, forward_only=False, config=None,
+                 corrective_tokens_mask=None):
         """Create the model.
 
         Args:
@@ -77,6 +83,20 @@ class TextCorrecterModel(object):
                                                       name="weight{0}".format(
                                                           i)))
 
+        # One hot encoding of corrective tokens.
+        corrective_tokens_tensor = tf.constant(corrective_tokens_mask if
+                                               corrective_tokens_mask else
+                                               np.zeros(self.target_vocab_size),
+                                               shape=[self.target_vocab_size],
+                                               dtype=tf.float32)
+        batched_corrective_tokens = tf.pack(
+            [corrective_tokens_tensor] * self.batch_size)
+        self.batch_corrective_tokens_mask = batch_corrective_tokens_mask = \
+            tf.placeholder(
+            tf.float32,
+            shape=[None, None],
+            name="corrective_tokens")
+
         # Our targets are decoder inputs shifted by one.
         targets = [self.decoder_inputs[i + 1]
                    for i in range(len(self.decoder_inputs) - 1)]
@@ -109,32 +129,42 @@ class TextCorrecterModel(object):
 
         # The seq2seq function: we use embedding for the input and attention.
         def seq2seq_f(encoder_inputs, decoder_inputs, do_decode):
-            w, b = output_projection
+            """
 
-            # TODO: modify bias here to bias the model towards selecting words
-            # present in the input sentence.
-            # The alternative is to use the raw attention_decoder in
-            # seq2seq_model and specify an alternate loop function.
-            input_bias = tf.reduce_sum(
-                tf.one_hot(indices=tf.concat(0, encoder_inputs),
-                           depth=self.target_vocab_size,
-                           on_value=self.config.projection_bias),
-                reduction_indices=0)
+            :param encoder_inputs: list of length equal to the input bucket
+            length of 1-D tensors (of length equal to the batch size) whose
+            elements consist of the token index of each sample in the batch
+            at a given index in the input.
+            :param decoder_inputs:
+            :param do_decode:
+            :return:
+            """
 
-            projection_bias = b + input_bias
+            if do_decode:
+                # Modify bias here to bias the model towards selecting words
+                # present in the input sentence.
+                input_bias = self.build_input_bias(encoder_inputs,
+                                                   batch_corrective_tokens_mask)
 
-            # Redefined seq2seq to allow for the injection of a special decoding
-            # function that leverages an n-gram model over the inputs.
-            # TODO: construct function that encloses the mini n-gram model
-            # derived from encoder inputs.
-            return tf.nn.seq2seq.embedding_attention_seq2seq(
-                encoder_inputs, decoder_inputs, cell,
-                num_encoder_symbols=source_vocab_size,
-                num_decoder_symbols=target_vocab_size,
-                embedding_size=size,
-                output_projection=(w, projection_bias),
-                feed_previous=do_decode)
-                # loop_fn_factory=build_decoder_fn_factory(encoder_inputs))
+                # Redefined seq2seq to allow for the injection of a special
+                # decoding function that
+                return seq2seq.embedding_attention_seq2seq(
+                    encoder_inputs, decoder_inputs, cell,
+                    num_encoder_symbols=source_vocab_size,
+                    num_decoder_symbols=target_vocab_size,
+                    embedding_size=size,
+                    output_projection=output_projection,
+                    feed_previous=do_decode,
+                    loop_fn_factory=
+                    apply_input_bias_and_extract_argmax_fn_factory(input_bias))
+            else:
+                return seq2seq.embedding_attention_seq2seq(
+                    encoder_inputs, decoder_inputs, cell,
+                    num_encoder_symbols=source_vocab_size,
+                    num_decoder_symbols=target_vocab_size,
+                    embedding_size=size,
+                    output_projection=output_projection,
+                    feed_previous=do_decode)
 
         # Training outputs and losses.
         if forward_only:
@@ -145,11 +175,16 @@ class TextCorrecterModel(object):
                 softmax_loss_function=softmax_loss_function)
             # If we use output projection, we need to project outputs for
             # decoding.
+            # Todo: we also need to apply our magic with the corrections here.
+
             if output_projection is not None:
                 for b in range(len(buckets)):
+                    input_bias = self.build_input_bias(
+                        self.encoder_inputs[:buckets[b][0]],
+                        batch_corrective_tokens_mask)
                     self.outputs[b] = [
-                        tf.matmul(output, output_projection[0]) +
-                        output_projection[1]
+                        project_and_apply_input_bias(output, output_projection,
+                                                     input_bias)
                         for output in self.outputs[b]]
         else:
             self.outputs, self.losses = tf.nn.seq2seq.model_with_buckets(
@@ -178,8 +213,15 @@ class TextCorrecterModel(object):
 
         self.saver = tf.train.Saver(tf.all_variables())
 
+    def build_input_bias(self, encoder_inputs, batch_corrective_tokens_mask):
+        packed_one_hot_inputs = tf.one_hot(indices=tf.pack(
+            encoder_inputs, axis=1), depth=self.target_vocab_size)
+        return tf.maximum(batch_corrective_tokens_mask,
+                          tf.reduce_max(packed_one_hot_inputs,
+                                        reduction_indices=1))
+
     def step(self, session, encoder_inputs, decoder_inputs, target_weights,
-             bucket_id, forward_only):
+             bucket_id, forward_only, corrective_tokens=None):
         """Run a step of the model feeding the given inputs.
 
         Args:
@@ -222,6 +264,14 @@ class TextCorrecterModel(object):
         for l in range(decoder_size):
             input_feed[self.decoder_inputs[l].name] = decoder_inputs[l]
             input_feed[self.target_weights[l].name] = target_weights[l]
+
+        corrective_tokens_vector = (corrective_tokens
+                                    if corrective_tokens is not None else
+                                    np.zeros(self.target_vocab_size))
+        batch_corrective_tokens = np.repeat([corrective_tokens_vector],
+                                            self.batch_size, axis=0)
+        input_feed[self.batch_corrective_tokens_mask.name] = (
+            batch_corrective_tokens)
 
         # Since our targets are decoder inputs shifted by one, we need one more.
         last_target = self.decoder_inputs[decoder_size].name
@@ -314,97 +364,55 @@ class TextCorrecterModel(object):
         return batch_encoder_inputs, batch_decoder_inputs, batch_weights
 
 
-class InputBiasedLanguageModel(object):
-    """Combines n-gram models over the training corpus and the encoder input."""
+def project_and_apply_input_bias(logits, output_projection, input_bias):
+    if output_projection is not None:
+        logits = nn_ops.xw_plus_b(
+            logits, output_projection[0], output_projection[1])
 
-    class NGramModel(object):
+    # Apply softmax to ensure all tokens have a positive value.
+    logits = tf.nn.softmax(logits)
 
-        def __init__(self, data, fake_backoff_discount=0.0):
-            self.fake_backoff_discount = fake_backoff_discount
+    # Apply input bias, which is a mask of shape [batch, vocab len]
+    # where each token from the input in addition to all "corrective"
+    # tokens are set to 1.0.
+    return tf.mul(logits, input_bias)
 
-            unigram_model_counts = defaultdict(int)
-            unigram_model_partition = 0
-            bigram_model_counts = defaultdict(int)
-            bigram_model_partitions = defaultdict(int)
 
-            for tokens in data:
-                prev_token = InputBiasedLanguageModel.LEFT_PAD
-                for token in tokens:
-                    unigram_model_counts[token] += 1
-                    unigram_model_partition += 1
-                    bigram_model_counts[(prev_token, token)] += 1
-                    bigram_model_partitions[prev_token] += 1
+def apply_input_bias_and_extract_argmax_fn_factory(input_bias):
+    """
 
-                    prev_token = token
+    :param encoder_inputs: list of length equal to the input bucket
+    length of 1-D tensors (of length equal to the batch size) whose
+    elements consist of the token index of each sample in the batch
+    at a given index in the input.
+    :return:
+    """
 
-            self.unigram_model_counts = unigram_model_counts
-            self.unigram_model_partition = unigram_model_partition
-            self.bigram_model_counts = bigram_model_counts
-            self.bigram_model_partition = bigram_model_partitions
+    def fn_factory(embedding, output_projection=None, update_embedding=True):
+        """Get a loop_function that extracts the previous symbol and embeds it.
 
-        def prob(self, word, context, k=0):
-            """
+        Args:
+          embedding: embedding tensor for symbols.
+          output_projection: None or a pair (W, B). If provided, each fed previous
+            output will first be multiplied by W and added B.
+          update_embedding: Boolean; if False, the gradients will not propagate
+            through the embeddings.
 
-            :param word:
-            :param context: list of previous words
-            :param k:
-            :return:
-            """
-            # We only go up to bigram models at the moment.
-            if len(context) == 0:
-                prev_word = InputBiasedLanguageModel.LEFT_PAD
-            else:
-                prev_word = context[-1]
-
-            # TODO: Katz-backoff and Good-Turing discounting
-            if self.bigram_model_counts[(prev_word, word)] > k:
-                # Use the bigram model.
-                prob = (1.0 * self.bigram_model_counts[(prev_word,
-                                                        word)] /
-                        self.bigram_model_partition[prev_word])
-            elif self.unigram_model_counts[word] > k:
-                prob = (
-                    self.fake_backoff_discount * self.unigram_model_counts[
-                        word] /
-                    self.unigram_model_partition)
-            else:
-                # Fake prob of unseen.
-                prob = 0.0001
-
-            return prob
-
-    LEFT_PAD = "LPAD"
-
-    def __init__(self, data_reader, train_path):
-        self.corpus_model = InputBiasedLanguageModel.NGramModel(
-            data_reader.read_tokens(train_path))
-
-        # TODO: move this to a different "model"?
-        corrective_tokens = set()
-        for source_tokens, target_tokens in \
-            data_reader.read_samples_by_string(train_path):
-            corrective_tokens.update(set(target_tokens) - set(source_tokens))
-        self.corrective_tokens = corrective_tokens
-
-    def prob(self, word, context, original_input):
+        Returns:
+          A loop function.
         """
+        def loop_function(prev, _):
+            prev = project_and_apply_input_bias(prev, output_projection,
+                                                input_bias)
 
-        :param word:
-        :param context:
-        :param original_input: list of words
-        :return:
-        """
-        # The idea here is that the unigram prob dist from the input model is
-        # still highly relevant, especially in the context of the model having
-        # "corrected away" the relevant bigram from the input.
-        input_model = InputBiasedLanguageModel.NGramModel(
-            [original_input], fake_backoff_discount=0.8)
+            prev_symbol = math_ops.argmax(prev, 1)
+            # Note that gradients will not propagate through the second
+            # parameter of embedding_lookup.
+            emb_prev = embedding_ops.embedding_lookup(embedding, prev_symbol)
+            if not update_embedding:
+                emb_prev = array_ops.stop_gradient(emb_prev)
+            return emb_prev, prev_symbol
+        return loop_function
 
-        p_input_model = input_model.prob(word, context)
-        p_corpus = self.corpus_model.prob(word, context)
+    return fn_factory
 
-        # Totally made up mixture.
-        return 0.8 * p_input_model + 0.2 * p_corpus
-
-    def is_corrective_token(self, token):
-        return token in self.corrective_tokens
