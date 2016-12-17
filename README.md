@@ -23,25 +23,45 @@ Note that this logic is not used during training, as this would only serve to el
 Since the decoding bias described above is applied within the truncated vocabulary used by the model, we will still see the unknown token in its output for any OOV tokens. The more generic problem of resolving these OOV tokens is non-trivial (e.g. see [Addressing the Rare Word Problem in NMT](https://arxiv.org/pdf/1410.8206v4.pdf)), but in this project we can again take advantage of its unique structure to create a fairly straightforward OOV token resolution scheme. That is, if we assume the sequence of OOV tokens in the input is equal to the sequence of OOV tokens in the output sequence, then we can trivially assign the appropriate token to each "unknown" token encountered int he decoding. Empirically, and intuitively, this appears to be an appropriate assumption, as the relatively simple class of errors these models are being trained to address should never include mistakes that warrant the insertion or removal of a rare token.
 
 ## Implementation
-This project reuses and slightly extends TensorFlow's [`Seq2SeqModel`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/models/rnn/translate/seq2seq_model.py), which itself implements a sequence-to-sequence model with an attention mechanism as described in https://arxiv.org/pdf/1412.7449v3.pdf. The primary contributions of this project are:
+This project reuses and slightly extends TensorFlow's [`Seq2SeqModel`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/contrib/seq2seq/python/ops/seq2seq.py), which itself implements a sequence-to-sequence model with an attention mechanism as described in https://arxiv.org/pdf/1412.7449v3.pdf. The primary contributions of this project are:
 
 - `data_reader.py`: an abstract class that defines the interface for classes which are capable of reading a source data set and producing input-output pairs, where the input is a grammatically incorrect variant of a source sentence and the output is the original sentence.
 - `text_correcter_data_readers.py`: contains a few implementations of `DataReader`, one over the [Penn Treebank dataset](https://www.google.com/url?q=http://www.fit.vutbr.cz/~imikolov/rnnlm/simple-examples.tgz&usg=AFQjCNG0IP5OHusdIAdJIrrem-HMck9AzA) and one over the [Cornell Movie-Dialogs Corpus](http://www.cs.cornell.edu/~cristian/Cornell_Movie-Dialogs_Corpus.html).
 - `text_correcter_models.py`: contains a version of `Seq2SeqModel` modified such that it implements the logic described in [Biased Decoding](#biased-decoding)
-- `correct_text.py`: a collection of helper functions that together allow for the training of a model and the usage of it to decode errant input sequences (at test time). The `decode` method defined herein implements the [OOV token resolution logic](#handling-oov-tokens). This also defines a main method, and can be invoked from the command line. It was largely derived from TensorFlow's [`translate.py`](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/models/rnn/translate/translate.py).
+- `correct_text.py`: a collection of helper functions that together allow for the training of a model and the usage of it to decode errant input sequences (at test time). The `decode` method defined herein implements the [OOV token resolution logic](#handling-oov-tokens). This also defines a main method, and can be invoked from the command line. It was largely derived from TensorFlow's [`translate.py`](https://www.tensorflow.org/tutorials/seq2seq/).
 - `TextCorrecter.ipynb`: an IPython notebook which ties together all of the above pieces to allow for the training and evaluation of the model in an interactive fashion.
 
 ### Example Usage
-TODO
+Note: this project requires TensorFlow version >= 0.11. See [this page](https://www.tensorflow.org/get_started/os_setup) for setup instructions.
+
+**Training:**
+```
+python correct_text.py --train_path /movie_dialog_train.txt \
+                       --val_path /movie_dialog_val.txt \
+                       --config DefaultMovieDialogConfig \
+                       --data_reader_type MovieDialogReader \
+                       --model_path /movie_dialog_model
+```
+
+**Testing:**
+```
+python correct_text.py --test_path /movie_dialog_test.txt \
+                       --config DefaultMovieDialogConfig \
+                       --data_reader_type MovieDialogReader \
+                       --model_path /movie_dialog_model \
+                       --decode
+```
 
 ## Experimental Results
 
+Below are some anecdotal and aggregate results from experiments using the Deep Text Correcter model with the [Cornell Movie-Dialogs Corpus](http://www.cs.cornell.edu/~cristian/Cornell_Movie-Dialogs_Corpus.html). The dataset consists of 304,713 lines from movie scripts, of which 243,768 lines were used to train the model and 30,474 lines each were used for the validation and testing sets. The sets were selected such that no lines from the same movie were present in both the training and testing sets.
+
 ### Examples
 Decoding a sentence with a missing article:
-![Example sentence correction](example_correction.png)
+![Example sentence correction](images/example_correction.png)
 
 Decoding a sentence with then/than confusion:
-![Example sentence correction](example_then_than_correction.png)
+![Example sentence correction](images/example_then_than_correction.png)
 
 ### Aggregate Performance
 Below are reported the BLEU and accuracy numbers over a test data set for both a trained model and a baseline, where:
