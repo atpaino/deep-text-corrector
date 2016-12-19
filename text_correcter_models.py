@@ -3,7 +3,6 @@ from __future__ import division
 from __future__ import print_function
 
 import random
-from collections import defaultdict
 
 import numpy as np
 import tensorflow as tf
@@ -173,12 +172,11 @@ class TextCorrecterModel(object):
                 self.target_weights, buckets,
                 lambda x, y: seq2seq_f(x, y, True),
                 softmax_loss_function=softmax_loss_function)
-            # If we use output projection, we need to project outputs for
-            # decoding.
-            # Todo: we also need to apply our magic with the corrections here.
 
             if output_projection is not None:
                 for b in range(len(buckets)):
+                    # We need to apply the same input bias used during model
+                    # evaluation when decoding.
                     input_bias = self.build_input_bias(
                         self.encoder_inputs[:buckets[b][0]],
                         batch_corrective_tokens_mask)
@@ -265,6 +263,7 @@ class TextCorrecterModel(object):
             input_feed[self.decoder_inputs[l].name] = decoder_inputs[l]
             input_feed[self.target_weights[l].name] = target_weights[l]
 
+        # TODO: learn corrective tokens during training
         corrective_tokens_vector = (corrective_tokens
                                     if corrective_tokens is not None else
                                     np.zeros(self.target_vocab_size))
@@ -370,12 +369,12 @@ def project_and_apply_input_bias(logits, output_projection, input_bias):
             logits, output_projection[0], output_projection[1])
 
     # Apply softmax to ensure all tokens have a positive value.
-    logits = tf.nn.softmax(logits)
+    probs = tf.nn.softmax(logits)
 
     # Apply input bias, which is a mask of shape [batch, vocab len]
     # where each token from the input in addition to all "corrective"
     # tokens are set to 1.0.
-    return tf.mul(logits, input_bias)
+    return tf.mul(probs, input_bias)
 
 
 def apply_input_bias_and_extract_argmax_fn_factory(input_bias):
