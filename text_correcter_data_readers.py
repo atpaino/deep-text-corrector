@@ -72,10 +72,11 @@ class MovieDialogReader(DataReader):
                     "than": "then"}
     # Add: "be":"to"
 
-    def __init__(self, config, train_path, dropout_prob=0.25,
-                 replacement_prob=0.25, dataset_copies=2):
+    def __init__(self, config, train_path=None, token_to_id=None,
+                 dropout_prob=0.25, replacement_prob=0.25, dataset_copies=2):
         super(MovieDialogReader, self).__init__(
-            config, train_path, special_tokens=[
+            config, train_path=train_path, token_to_id=token_to_id,
+            special_tokens=[
                 PAD_TOKEN, GO_TOKEN, EOS_TOKEN,
                 MovieDialogReader.UNKNOWN_TOKEN],
             dataset_copies=dataset_copies)

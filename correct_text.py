@@ -21,7 +21,6 @@ import sys
 import time
 from collections import defaultdict
 
-import nltk
 import numpy as np
 import tensorflow as tf
 
@@ -96,7 +95,7 @@ class DefaultMovieDialogConfig():
     max_vocabulary_size = 2000
 
     size = 512
-    num_layers = 2
+    num_layers = 4
     max_gradient_norm = 5.0
     batch_size = 64
     learning_rate = 0.5
@@ -326,6 +325,8 @@ def decode_sentence(sess, model, data_reader, sentence, corrective_tokens=set(),
 def evaluate_accuracy(sess, model, data_reader, corrective_tokens, test_path,
                       max_samples=None):
     """Evaluates the accuracy and BLEU score of the given model."""
+
+    import nltk  # Loading here to avoid having to bundle it in lambda.
 
     # Build a collection of "baseline" and model-based hypotheses, where the
     # baseline is just the (potentially errant) source sequence.

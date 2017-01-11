@@ -16,28 +16,35 @@ GO_TOKEN = "GO"
 
 class DataReader(object):
 
-    def __init__(self, config, train_path, special_tokens=(), dataset_copies=1):
+    def __init__(self, config, train_path=None, token_to_id=None,
+                 special_tokens=(), dataset_copies=1):
         self.config = config
         self.dataset_copies = dataset_copies
 
         # Construct vocabulary.
         max_vocabulary_size = self.config.max_vocabulary_size
-        token_counts = Counter()
 
-        for tokens in self.read_tokens(train_path):
-            token_counts.update(tokens)
+        if train_path is None:
+            self.token_to_id = token_to_id
+        else:
+            token_counts = Counter()
 
-        self.token_counts = token_counts
+            for tokens in self.read_tokens(train_path):
+                token_counts.update(tokens)
 
-        # Get to max_vocab_size words
-        count_pairs = sorted(token_counts.items(), key=lambda x: (-x[1], x[0]))
-        vocabulary, _ = list(zip(*count_pairs))
-        vocabulary = list(vocabulary)
-        # Insert the special tokens at the beginning.
-        vocabulary[0:0] = special_tokens
-        full_token_and_id = zip(vocabulary, range(len(vocabulary)))
-        self.full_token_to_id = dict(full_token_and_id)
-        self.token_to_id = dict(full_token_and_id[:max_vocabulary_size])
+            self.token_counts = token_counts
+
+            # Get to max_vocab_size words
+            count_pairs = sorted(token_counts.items(),
+                                 key=lambda x: (-x[1], x[0]))
+            vocabulary, _ = list(zip(*count_pairs))
+            vocabulary = list(vocabulary)
+            # Insert the special tokens at the beginning.
+            vocabulary[0:0] = special_tokens
+            full_token_and_id = zip(vocabulary, range(len(vocabulary)))
+            self.full_token_to_id = dict(full_token_and_id)
+            self.token_to_id = dict(full_token_and_id[:max_vocabulary_size])
+
         self.id_to_token = {v: k for k, v in self.token_to_id.items()}
 
     def read_tokens(self, path):

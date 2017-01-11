@@ -4,4 +4,4 @@
 *.swp
 .DS_Store
 *.zip
-upload_lambda_s3.zip
+upload_lambda_s3.sh
