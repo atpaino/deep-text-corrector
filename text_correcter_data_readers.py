@@ -113,7 +113,5 @@ class MovieDialogReader(DataReader):
     def read_tokens(self, path):
         with open(path, "r") as f:
             for line in f:
-                # yield nltk.word_tokenize(line.lower().rstrip().lstrip())
-                #
-                yield line.lower().rstrip().lstrip().split()
+                yield line.lower().strip().split()
 
