@@ -15,7 +15,7 @@ import seq2seq
 from data_reader import PAD_ID, GO_ID
 
 
-class TextCorrecterModel(object):
+class TextCorrectorModel(object):
     """Sequence-to-sequence model used to correct grammatical errors in text.
 
     NOTE: mostly copied from TensorFlow's seq2seq_model.py; only modifications
